@@ -1,0 +1,100 @@
+trigger:
+  - main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - task: DownloadSecureFile@1
+    name: SSHKey
+    displayName: "Descargar key SSH"
+    inputs:
+      secureFile: "TasksSSHKey.pem"
+
+  - task: SSH@0
+    inputs:
+      sshEndpoint: "ssh_testing"
+      runOptions: "inline"
+      inline: |
+        rm -rf /home/ubuntu/tasksdeployfiles
+        mkdir /home/ubuntu/tasksdeployfiles
+        mkdir /home/ubuntu/tasksdeployfiles/wwwroot
+      readyTimeout: "20000"
+    displayName: "Borrar carpeta en server"
+
+  - task: NodeTool@0
+    inputs:
+      versionSpec: "18.x"
+    displayName: "Instalar Node.js"
+
+  - task: UseDotNet@2
+    inputs:
+      packageType: "sdk"
+      version: "8.x"
+      installationPath: $(Agent.ToolsDirectory)/dotnet
+    displayName: "Instalar .NET"
+
+  - script: |
+      dotnet tool install -g dotnet-ef
+    workingDirectory: $(Build.SourcesDirectory)/
+    displayName: "Instalar EF"
+
+  - script: yarn
+    workingDirectory: $(Build.SourcesDirectory)/angular
+    displayName: "Dependencias Frontend"
+
+  - task: DotNetCoreCLI@2
+    inputs:
+      command: "restore"
+      projects: "$(Build.SourcesDirectory)/aspnet-core/src/*/*.csproj"
+      feedsToUse: "select"
+      verbosityRestore: "Normal"
+    displayName: "Restaurar Backend"
+
+  - task: CmdLine@2
+    inputs:
+      script: "mkdir $(Build.SourcesDirectory)/backend"
+    displayName: "Crear carpeta backend"
+
+  - task: DotNetCoreCLI@2
+    inputs:
+      command: "publish"
+      publishWebProjects: false
+      projects: "$(Build.SourcesDirectory)/aspnet-core/src/API/API.csproj"
+      arguments: "-o $(Build.SourcesDirectory)/backend/"
+      zipAfterPublish: false
+      modifyOutputPath: false
+    displayName: "Compilar Backend"
+
+  - script: yarn build
+    workingDirectory: $(Build.SourcesDirectory)/angular
+    displayName: "Compilar Frontend"
+
+  - script: |
+      chmod 600 $(SSHKey.secureFilePath)
+      scp -o StrictHostKeyChecking=no -i $(SSHKey.secureFilePath) -r $(Build.SourcesDirectory)/backend/* ubuntu@52.2.226.247:/home/ubuntu/tasksdeployfiles
+      scp -o StrictHostKeyChecking=no -i $(SSHKey.secureFilePath) -r $(Build.SourcesDirectory)/angular/dist/* ubuntu@52.2.226.247:/home/ubuntu/tasksdeployfiles/wwwroot
+    displayName: "Copiando Archivos a testing"
+
+  # currently the pipeline virtual machine connects to the
+  # instance via ssh and executes the migrations in it, but
+  # now we have to make the pipeline execute them locally by
+  # connecting to the instance via IP address.
+  # /usr/bin/dotnet run
+  - task: SSH@0
+    inputs:
+      sshEndpoint: "ssh_testing"
+      runOptions: "inline"
+      inline: |
+        sudo service tasks stop
+        sudo rm -rf /var/www/tasks/*
+        sudo cp -rf /home/ubuntu/tasksdeployfiles/* /var/www/tasks
+        cd ~/AG.Tasks/aspnet-core/src/Migrator
+        git pull -q
+        /usr/bin/dotnet run
+        sudo service tasks start
+      readyTimeout: "20000"
+    displayName: "Copiando archivos, corriendo Migrator, reiniciando servicio"
+
+    # try to implement cache for the dependencies
+    # packages such as node_modules and nuget packages

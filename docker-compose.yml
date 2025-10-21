@@ -1,0 +1,10 @@
+services:
+  db:
+    image: postgres:bullseye
+    restart: always
+    ports:
+      - 2170:5432
+    environment:
+      POSTGRES_PASSWORD: agtasks
+      POSTGRES_USER: ag
+      POSTGRES_DB: Tasks
